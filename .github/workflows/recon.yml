@@ -1,0 +1,869 @@
+name: 🔍 GitHub Actions Runner 侦察报告
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_gpu:
+        description: '是否尝试探测 GPU（部分 runner 无 GPU）'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  # ============================================================
+  # 在三个平台上并行采集信息
+  # ============================================================
+  probe-runners:
+    name: 侦察 ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+      fail-fast: false
+
+    steps:
+      - name: 📋 采集系统配置（Linux）
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          FILE="report-${{ matrix.os }}.txt"
+          SEP="============================================================"
+
+          echo "$SEP" >> "$FILE"
+          echo "  GitHub Actions Runner 侦察报告"
+          echo "  OS: ${{ matrix.os }}"
+          echo "  Runner: $RUNNER_NAME"
+          echo "  采集时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "$SEP"
+          echo ""
+
+          echo "==================== 1. 系统基本信息 ====================" >> "$FILE"
+          echo "主机名: $(hostname)" >> "$FILE"
+          echo "操作系统: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2)" >> "$FILE"
+          echo "内核版本: $(uname -r)" >> "$FILE"
+          echo "架构: $(uname -m)" >> "$FILE"
+          echo "DNS 域名: $(dnsdomainname 2>/dev/null || echo 'N/A')" >> "$FILE"
+          echo ""
+
+          echo "==================== 2. GitHub Actions 元数据 ====================" >> "$FILE"
+          echo "Runner Name: $RUNNER_NAME" >> "$FILE"
+          echo "Runner OS: $RUNNER_OS" >> "$FILE"
+          echo "Runner Arch: $RUNNER_ARCH" >> "$FILE"
+          echo "Runner Temp: $RUNNER_TEMP" >> "$FILE"
+          echo "Runner Tool Cache: $RUNNER_TOOL_CACHE" >> "$FILE"
+          echo "Runner Workspace: $RUNNER_WORKSPACE" >> "$FILE"
+          echo "Image OS: $ImageOS" >> "$FILE"
+          echo "Image Version: $ImageVersion" >> "$FILE"
+          echo "Actions: $GITHUB_ACTIONS" >> "$FILE"
+          echo "Server URL: $GITHUB_SERVER_URL" >> "$FILE"
+          echo ""
+
+          echo "==================== 3. CPU 信息 ====================" >> "$FILE"
+          echo "--- lscpu ---" >> "$FILE"
+          lscpu 2>/dev/null >> "$FILE" || echo "lscpu not available" >> "$FILE"
+          echo ""
+          echo "--- /proc/cpuinfo (model name) ---" >> "$FILE"
+          grep "model name" /proc/cpuinfo 2>/dev/null | head -1 >> "$FILE" || echo "N/A" >> "$FILE"
+          echo "--- /proc/cpuinfo (flags) ---" >> "$FILE"
+          grep "flags" /proc/cpuinfo 2>/dev/null | head -1 >> "$FILE" || echo "N/A" >> "$FILE"
+          echo "--- CPU 缓存 ---" >> "$FILE"
+          echo "L1d: $(lscpu 2>/dev/null | grep 'L1d cache' | awk '{print $NF}')" >> "$FILE"
+          echo "L1i: $(lscpu 2>/dev/null | grep 'L1i cache' | awk '{print $NF}')" >> "$FILE"
+          echo "L2:  $(lscpu 2>/dev/null | grep 'L2 cache' | awk '{print $NF}')" >> "$FILE"
+          echo "L3:  $(lscpu 2>/dev/null | grep 'L3 cache' | awk '{print $NF}')" >> "$FILE"
+          echo "--- CPU 拓扑 ---" >> "$FILE"
+          lscpu 2>/dev/null | grep -E "Socket|Core|Thread|NUMA|CPU\(s\):" >> "$FILE"
+          echo ""
+
+          echo "==================== 4. 内存信息 ====================" >> "$FILE"
+          echo "--- free -h ---" >> "$FILE"
+          free -h >> "$FILE"
+          echo ""
+          echo "--- /proc/meminfo ---" >> "$FILE"
+          cat /proc/meminfo >> "$FILE"
+          echo ""
+          echo "--- dmidecode (需 root，可能失败) ---" >> "$FILE"
+          sudo dmidecode -t memory 2>/dev/null | head -50 >> "$FILE" || echo "(需要 root 权限，跳过 dmidecode)" >> "$FILE"
+          echo ""
+          echo "--- vm.swappiness ---" >> "$FILE"
+          cat /proc/sys/vm/swappiness >> "$FILE"
+          echo ""
+
+          echo "==================== 5. GPU 信息 ====================" >> "$FILE"
+          echo "--- lspci | grep -i vga ---" >> "$FILE"
+          lspci 2>/dev/null | grep -i -E "vga|3d|display" >> "$FILE" || echo "lspci not available" >> "$FILE"
+          echo ""
+          echo "--- nvidia-smi ---" >> "$FILE"
+          nvidia-smi 2>/dev/null >> "$FILE" || echo "No NVIDIA GPU detected" >> "$FILE"
+          echo ""
+          echo "--- rocm-smi / amd-smi ---" >> "$FILE"
+          rocm-smi 2>/dev/null >> "$FILE" || amd-smi static 2>/dev/null >> "$FILE" || echo "No AMD GPU detected" >> "$FILE"
+          echo ""
+          echo "--- ls /dev/dri ---" >> "$FILE"
+          ls -la /dev/dri/ 2>/dev/null || echo "No /dev/dri" >> "$FILE"
+          echo ""
+          echo "--- /sys/class/drm ---" >> "$FILE"
+          ls /sys/class/drm/ 2>/dev/null || echo "N/A" >> "$FILE"
+          echo ""
+          echo "--- OpenGL info (glxinfo) ---" >> "$FILE"
+          glxinfo 2>/dev/null | grep -E "OpenGL vendor|OpenGL renderer|OpenGL version" >> "$FILE" || echo "glxinfo not available" >> "$FILE"
+          echo ""
+
+          echo "==================== 6. 磁盘信息 ====================" >> "$FILE"
+          echo "--- df -hT ---" >> "$FILE"
+          df -hT >> "$FILE"
+          echo ""
+          echo "--- lsblk ---" >> "$FILE"
+          lsblk 2>/dev/null >> "$FILE" || echo "lsblk not available" >> "$FILE"
+          echo ""
+          echo "--- fdisk -l (需 root) ---" >> "$FILE"
+          sudo fdisk -l 2>/dev/null | head -30 >> "$FILE" || echo "(需要 root 权限，跳过)" >> "$FILE"
+          echo ""
+          echo "--- 文件系统类型 ---" >> "$FILE"
+          mount | grep -E "^/dev" >> "$FILE"
+          echo ""
+          echo "--- I/O 调度器 ---" >> "$FILE"
+          for disk in /sys/block/sd* /sys/block/nvme* /sys/block/vd*; do
+            if [ -d "$disk" ]; then
+              echo "$(basename $disk): $(cat $disk/queue/scheduler 2>/dev/null || echo N/A)" >> "$FILE"
+            fi
+          done
+          echo ""
+
+          echo "==================== 7. 网络信息 ====================" >> "$FILE"
+          echo "--- 公网 IP ---" >> "$FILE"
+          curl -s --max-time 10 ifconfig.me >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo "--- curl -s ip.sb ---" >> "$FILE"
+          curl -s --max-time 10 ip.sb >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo "--- curl -s icanhazip.com ---" >> "$FILE"
+          curl -s --max-time 10 icanhazip.com >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo ""
+          echo "--- Cloudflare 1.1.1.1 cdn-cgi/trace ---" >> "$FILE"
+          curl -s --max-time 10 https://1.1.1.1/cdn-cgi/trace >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo "--- Cloudflare 1.0.0.1 cdn-cgi/trace ---" >> "$FILE"
+          curl -s --max-time 10 https://1.0.0.1/cdn-cgi/trace >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo "--- Cloudflare www cdn-cgi/trace (对比) ---" >> "$FILE"
+          curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo "--- User-Agent 探测 ---" >> "$FILE"
+          echo "curl 默认 UA:" >> "$FILE"
+          curl -s --max-time 10 -I https://www.google.com 2>/dev/null | grep -i "user-agent" >> "$FILE" || echo "  $(curl --version | head -1)" >> "$FILE"
+          echo "wget UA:" >> "$FILE"
+          wget --version 2>/dev/null | head -1 >> "$FILE" || echo "  wget not installed" >> "$FILE"
+          echo "requests User-Agent (Python):" >> "$FILE"
+          python3 -c "import requests; print('  ' + requests.utils.default_headers()['User-Agent'])" 2>/dev/null || echo "  python requests not available" >> "$FILE"
+          echo "urllib User-Agent:" >> "$FILE"
+          python3 -c "from urllib.request import Request; r = Request('https://httpbin.org/user-agent'); print('  ' + __import__('urllib.request').urlopen(r).read().decode())" 2>/dev/null || echo "  urllib request failed" >> "$FILE"
+          echo "httpbin.org/headers (完整请求头):" >> "$FILE"
+          curl -s --max-time 10 https://httpbin.org/headers 2>/dev/null | python3 -m json.tool 2>/dev/null >> "$FILE" || curl -s --max-time 10 https://httpbin.org/headers >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo "--- httpbin.org/ip ---" >> "$FILE"
+          curl -s --max-time 10 https://httpbin.org/ip >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo "" >> "$FILE"
+          echo "--- ip addr ---" >> "$FILE"
+          ip addr 2>/dev/null >> "$FILE" || ifconfig 2>/dev/null >> "$FILE" || echo "N/A" >> "$FILE"
+          echo ""
+          echo "--- ip route ---" >> "$FILE"
+          ip route 2>/dev/null >> "$FILE" || route -n 2>/dev/null >> "$FILE" || echo "N/A" >> "$FILE"
+          echo ""
+          echo "--- DNS 配置 ---" >> "$FILE"
+          cat /etc/resolv.conf >> "$FILE"
+          echo ""
+          echo "--- 网络接口详情 ---" >> "$FILE"
+          ip -d link 2>/dev/null >> "$FILE" || echo "N/A" >> "$FILE"
+          echo ""
+          echo "--- /proc/net/ ---" >> "$FILE"
+          echo "ARP:" >> "$FILE"
+          cat /proc/net/arp 2>/dev/null >> "$FILE" || echo "N/A" >> "$FILE"
+          echo "--- 防火墙状态 ---" >> "$FILE"
+          sudo iptables -L -n -v 2>/dev/null | head -30 >> "$FILE" || echo "(需要 root 权限，跳过)" >> "$FILE"
+          echo ""
+          echo "--- 网络带宽测试 (iperf3，可选) ---" >> "$FILE"
+          which iperf3 >/dev/null 2>&1 && echo "iperf3 available" >> "$FILE" || echo "iperf3 not installed" >> "$FILE"
+          echo ""
+
+          echo "==================== 8. 环境变量 ====================" >> "$FILE"
+          env | sort >> "$FILE"
+          echo ""
+
+          echo "==================== 9. 已安装软件 ====================" >> "$FILE"
+          echo "--- 包管理器列表数量 ---" >> "$FILE"
+          echo "dpkg: $(dpkg -l 2>/dev/null | wc -l) packages" >> "$FILE"
+          echo "snap: $(snap list 2>/dev/null | wc -l) snaps" >> "$FILE"
+          echo "npm global: $(npm list -g --depth=0 2>/dev/null | wc -l) packages" >> "$FILE"
+          echo "pip: $(pip list 2>/dev/null | wc -l) packages" >> "$FILE"
+          echo "--- 工具版本 ---" >> "$FILE"
+          echo "bash: $(bash --version | head -1)" >> "$FILE"
+          echo "gcc: $(gcc --version 2>/dev/null | head -1 || echo N/A)" >> "$FILE"
+          echo "g++: $(g++ --version 2>/dev/null | head -1 || echo N/A)" >> "$FILE"
+          echo "clang: $(clang --version 2>/dev/null | head -1 || echo N/A)" >> "$FILE"
+          echo "rustc: $(rustc --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "go: $(go version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "java: $(java -version 2>&1 | head -1 || echo N/A)" >> "$FILE"
+          echo "node: $(node --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "python: $(python3 --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "ruby: $(ruby --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "docker: $(docker --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "git: $(git --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "make: $(make --version 2>/dev/null | head -1 || echo N/A)" >> "$FILE"
+          echo "cmake: $(cmake --version 2>/dev/null | head -1 || echo N/A)" >> "$FILE"
+          echo ""
+
+          echo "==================== 10. 容器 / 虚拟化信息 ====================" >> "$FILE"
+          echo "--- 是否在 Docker 中 ---" >> "$FILE"
+          if [ -f /.dockerenv ]; then echo "YES (/.dockerenv exists)" >> "$FILE"; else echo "No .dockerenv found" >> "$FILE"; fi
+          echo ""
+          echo "--- systemd-detect-virt ---" >> "$FILE"
+          systemd-detect-virt 2>/dev/null >> "$FILE" || echo "systemd-detect-virt not available" >> "$FILE"
+          echo ""
+          echo "--- /proc/1/cgroup (前 10 行) ---" >> "$FILE"
+          head -10 /proc/1/cgroup 2>/dev/null >> "$FILE"
+          echo ""
+          echo "--- Docker info ---" >> "$FILE"
+          docker info 2>/dev/null | head -40 >> "$FILE" || echo "Docker not available" >> "$FILE"
+          echo ""
+
+          echo "==================== 11. 内核模块 & 安全 ====================" >> "$FILE"
+          echo "--- lsmod (前 30 行) ---" >> "$FILE"
+          lsmod 2>/dev/null | head -30 >> "$FILE" || echo "N/A" >> "$FILE"
+          echo ""
+          echo "--- SELinux ---" >> "$FILE"
+          getenforce 2>/dev/null >> "$FILE" || echo "SELinux not present" >> "$FILE"
+          echo ""
+          echo "--- AppArmor ---" >> "$FILE"
+          aa-status 2>/dev/null | head -10 >> "$FILE" || echo "AppArmor not available" >> "$FILE"
+          echo ""
+          echo "--- CPU 安全漏洞 (spectre/meltdown) ---" >> "$FILE"
+          grep -r . /sys/devices/system/cpu/vulnerabilities/ 2>/dev/null >> "$FILE" || echo "N/A" >> "$FILE"
+          echo ""
+
+          echo "==================== 12. 进程 & 资源限制 ====================" >> "$FILE"
+          echo "--- ulimit -a ---" >> "$FILE"
+          ulimit -a >> "$FILE"
+          echo ""
+          echo "--- nproc ---" >> "$FILE"
+          nproc >> "$FILE"
+          echo ""
+          echo "--- top -bn1 | head -20 ---" >> "$FILE"
+          top -bn1 2>/dev/null | head -20 >> "$FILE"
+          echo ""
+          echo "--- cgroup 限制 ---" >> "$FILE"
+          echo "CPU quota: $(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "CPU period: $(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "Memory limit: $(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "PIDs max: $(cat /sys/fs/cgroup/pids/pids.max 2>/dev/null || echo N/A)" >> "$FILE"
+          echo ""
+
+          echo "==================== 13. 编译器 & 构建工具 ====================" >> "$FILE"
+          echo "gcc target: $(gcc -dumpmachine 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "gcc version: $(gcc -dumpversion 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "clang target: $(clang -dumpmachine 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "ld (linker): $(ld --version 2>/dev/null | head -1 || echo N/A)" >> "$FILE"
+          echo "gold linker: $(which gold 2>/dev/null || echo N/A)" >> "$FILE"
+          echo ""
+
+          echo "==================== 14. 其他有用信息 ====================" >> "$FILE"
+          echo "--- locale ---" >> "$FILE"
+          locale >> "$FILE"
+          echo ""
+          echo "--- 时区 ---" >> "$FILE"
+          timedatectl 2>/dev/null | head -10 >> "$FILE" || echo "timedatectl not available" >> "$FILE"
+          echo ""
+          echo "--- /proc/version ---" >> "$FILE"
+          cat /proc/version >> "$FILE"
+          echo ""
+          echo "--- uptime ---" >> "$FILE"
+          uptime >> "$FILE"
+          echo ""
+          echo "--- whoami / id ---" >> "$FILE"
+          whoami >> "$FILE"
+          id >> "$FILE"
+          echo ""
+          echo "--- sudo 权限 ---" >> "$FILE"
+          sudo -l 2>/dev/null | head -20 >> "$FILE" || echo "sudo not available" >> "$FILE"
+          echo ""
+          echo "--- /etc/apt/sources.list (前 20 行) ---" >> "$FILE"
+          head -20 /etc/apt/sources.list 2>/dev/null >> "$FILE"
+          echo ""
+          echo "--- crontab ---" >> "$FILE"
+          crontab -l 2>/dev/null >> "$FILE" || echo "No crontab" >> "$FILE"
+          echo ""
+          echo "--- systemd 服务 (running, 前 30) ---" >> "$FILE"
+          systemctl list-units --type=service --state=running 2>/dev/null | head -30 >> "$FILE" || echo "systemctl not available" >> "$FILE"
+          echo ""
+
+          cat "$FILE"
+
+      - name: 📋 采集系统配置（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $FILE = "report-${{ matrix.os }}.txt"
+          $SEP = "=" * 60
+
+          Add-Content -Path $FILE -Value $SEP
+          Add-Content -Path $FILE -Value "  GitHub Actions Runner 侦察报告"
+          Add-Content -Path $FILE -Value "  OS: ${{ matrix.os }}"
+          Add-Content -Path $FILE -Value "  Runner: $env:RUNNER_NAME"
+          Add-Content -Path $FILE -Value "  采集时间: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')) UTC"
+          Add-Content -Path $FILE -Value $SEP
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 1. 系统基本信息 ===================="
+          Add-Content -Path $FILE -Value "主机名: $env:COMPUTERNAME"
+          Add-Content -Path $FILE -Value "操作系统: $([System.Environment]::OSVersion.VersionString)"
+          $osInfo = Get-CimInstance Win32_OperatingSystem
+          Add-Content -Path $FILE -Value "OS 名称: $($osInfo.Caption)"
+          Add-Content -Path $FILE -Value "OS 版本: $($osInfo.Version)"
+          Add-Content -Path $FILE -Value "OS 架构: $($osInfo.OSArchitecture)"
+          Add-Content -Path $FILE -Value "系统目录: $($osInfo.SystemDirectory)"
+          Add-Content -Path $FILE -Value "安装日期: $($osInfo.InstallDate)"
+          Add-Content -Path $FILE -Value "最后启动: $($osInfo.LastBootUpTime)"
+          Add-Content -Path $FILE -Value "系统盘: $($osInfo.SystemDrive)"
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 2. GitHub Actions 元数据 ===================="
+          Add-Content -Path $FILE -Value "Runner Name: $env:RUNNER_NAME"
+          Add-Content -Path $FILE -Value "Runner OS: $env:RUNNER_OS"
+          Add-Content -Path $FILE -Value "Runner Arch: $env:RUNNER_ARCH"
+          Add-Content -Path $FILE -Value "Runner Temp: $env:RUNNER_TEMP"
+          Add-Content -Path $FILE -Value "Runner Tool Cache: $env:RUNNER_TOOL_CACHE"
+          Add-Content -Path $FILE -Value "Runner Workspace: $env:RUNNER_WORKSPACE"
+          Add-Content -Path $FILE -Value "Image OS: $env:ImageOS"
+          Add-Content -Path $FILE -Value "Image Version: $env:ImageVersion"
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 3. CPU 信息 ===================="
+          $cpu = Get-CimInstance Win32_Processor
+          Add-Content -Path $FILE -Value "CPU 名称: $($cpu.Name)"
+          Add-Content -Path $FILE -Value "制造商: $($cpu.Manufacturer)"
+          Add-Content -Path $FILE -Value "描述: $($cpu.Description)"
+          Add-Content -Path $FILE -Value "核心数: $($cpu.NumberOfCores)"
+          Add-Content -Path $FILE -Value "逻辑处理器数: $($cpu.NumberOfLogicalProcessors)"
+          Add-Content -Path $FILE -Value "最大频率: $($cpu.MaxClockSpeed) MHz"
+          Add-Content -Path $FILE -Value "当前频率: $($cpu.CurrentClockSpeed) MHz"
+          Add-Content -Path $FILE -Value "二级缓存: $($cpu.L2CacheSize) KB"
+          Add-Content -Path $FILE -Value "三级缓存: $($cpu.L3CacheSize) KB"
+          Add-Content -Path $FILE -Value "虚拟化: $($cpu.VirtualizationFirmwareEnabled)"
+          Add-Content -Path $FILE -Value "CPUID: $($cpu.ProcessorId)"
+          Add-Content -Path $FILE -Value "Socket 数: $((Get-CimInstance Win32_Processor | Measure-Object).Count)"
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- wmic cpu full ---"
+          wmic cpu get /format:list 2>$null | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 4. 内存信息 ===================="
+          $mem = Get-CimInstance Win32_ComputerSystem
+          Add-Content -Path $FILE -Value "总物理内存: $([math]::Round($mem.TotalPhysicalMemory / 1GB, 2)) GB"
+          Add-Content -Path $FILE -Value "可用物理内存: $([math]::Round($mem.TotalPhysicalMemory / 1GB, 2)) GB (总量)"
+          $osMem = Get-CimInstance Win32_OperatingSystem
+          Add-Content -Path $FILE -Value "可用内存: $([math]::Round($osMem.FreePhysicalMemory / 1MB, 2)) GB"
+          Add-Content -Path $FILE -Value "虚拟内存总量: $([math]::Round($osMem.TotalVirtualMemorySize / 1GB, 2)) GB"
+          Add-Content -Path $FILE -Value "可用虚拟内存: $([math]::Round($osMem.FreeVirtualMemory / 1GB, 2)) GB"
+          Add-Content -Path $FILE -Value "页面文件: $([math]::Round($osMem.SizeStoredInPagingFiles / 1GB, 2)) GB"
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- 内存插槽 (Win32_PhysicalMemory) ---"
+          Get-CimInstance Win32_PhysicalMemory | ForEach-Object {
+              Add-Content -Path $FILE -Value "  插槽: $($_.DeviceLocator), 容量: $([math]::Round($_.Capacity / 1GB, 2)) GB, 速度: $($_.Speed) MHz, 制造商: $($_.Manufacturer), 类型: $($_.SMBIOSMemoryType)"
+          }
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- wmic memorychip ---"
+          wmic memorychip get /format:list 2>$null | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 5. GPU 信息 ===================="
+          Add-Content -Path $FILE -Value "--- Win32_VideoController ---"
+          Get-CimInstance Win32_VideoController | ForEach-Object {
+              Add-Content -Path $FILE -Value "  名称: $($_.Name)"
+              Add-Content -Path $FILE -Value "  适配器兼容性: $($_.AdapterCompatibility)"
+              Add-Content -Path $FILE -Value "  驱动版本: $($_.DriverVersion)"
+              Add-Content -Path $FILE -Value "  驱动日期: $($_.DriverDate)"
+              Add-Content -Path $FILE -Value "  显存: $([math]::Round($_.AdapterRAM / 1GB, 2)) GB"
+              Add-Content -Path $FILE -Value "  分辨率: $($_.CurrentHorizontalResolution)x$($_.CurrentVerticalResolution)"
+              Add-Content -Path $FILE -Value "  刷新率: $($_.CurrentRefreshRate) Hz"
+              Add-Content -Path $FILE -Value "  VideoProcessor: $($_.VideoProcessor)"
+              Add-Content -Path $FILE -Value "  VideoModeDescription: $($_.VideoModeDescription)"
+              Add-Content -Path $FILE -Value ""
+          }
+          Add-Content -Path $FILE -Value "--- nvidia-smi ---"
+          nvidia-smi 2>$null | Add-Content -Path $FILE
+          if ($LASTEXITCODE -ne 0) { Add-Content -Path $FILE -Value "No NVIDIA GPU detected" }
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 6. 磁盘信息 ===================="
+          Add-Content -Path $FILE -Value "--- Win32_DiskDrive ---"
+          Get-CimInstance Win32_DiskDrive | ForEach-Object {
+              Add-Content -Path $FILE -Value "  设备: $($_.DeviceID), 型号: $($_.Model), 大小: $([math]::Round($_.Size / 1GB, 2)) GB, 接口: $($_.InterfaceType), 类型: $($_.MediaType)"
+          }
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- Win32_LogicalDisk ---"
+          Get-CimInstance Win32_LogicalDisk | ForEach-Object {
+              Add-Content -Path $FILE -Value "  盘符: $($_.DeviceID), 大小: $([math]::Round($_.Size / 1GB, 2)) GB, 剩余: $([math]::Round($_.FreeSpace / 1GB, 2)) GB, 文件系统: $($_.FileSystem)"
+          }
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- Win32_Partition ---"
+          Get-CimInstance Win32_Partition | ForEach-Object {
+              Add-Content -Path $FILE -Value "  名称: $($_.Name), 大小: $([math]::Round($_.Size / 1GB, 2)) GB, 类型: $($_.Type), 启动: $($_.Bootable)"
+          }
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- Get-Volume ---"
+          Get-Volume | Format-Table -AutoSize | Out-String | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 7. 网络信息 ===================="
+          Add-Content -Path $FILE -Value "--- 公网 IP ---"
+          try { (Invoke-WebRequest -Uri "http://ifconfig.me" -UseBasicParsing -TimeoutSec 10).Content | Add-Content -Path $FILE } catch { "Failed" | Add-Content -Path $FILE }
+          try { Add-Content -Path $FILE -Value "ip.sb: $((Invoke-WebRequest -Uri 'https://api.ip.sb/ip' -UseBasicParsing -TimeoutSec 10).Content)" } catch {}
+          try { Add-Content -Path $FILE -Value "icanhazip: $((Invoke-WebRequest -Uri 'https://icanhazip.com' -UseBasicParsing -TimeoutSec 10).Content)" } catch {}
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- Cloudflare 1.1.1.1 cdn-cgi/trace ---"
+          try { (Invoke-WebRequest -Uri "https://1.1.1.1/cdn-cgi/trace" -UseBasicParsing -TimeoutSec 10).Content | Add-Content -Path $FILE } catch { "Failed" | Add-Content -Path $FILE }
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- Cloudflare 1.0.0.1 cdn-cgi/trace ---"
+          try { (Invoke-WebRequest -Uri "https://1.0.0.1/cdn-cgi/trace" -UseBasicParsing -TimeoutSec 10).Content | Add-Content -Path $FILE } catch { "Failed" | Add-Content -Path $FILE }
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- Cloudflare www cdn-cgi/trace (对比) ---"
+          try { (Invoke-WebRequest -Uri "https://www.cloudflare.com/cdn-cgi/trace" -UseBasicParsing -TimeoutSec 10).Content | Add-Content -Path $FILE } catch { "Failed" | Add-Content -Path $FILE }
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- User-Agent 探测 ---"
+          Add-Content -Path $FILE -Value "PowerShell Invoke-WebRequest 默认 UA:"
+          try { Add-Content -Path $FILE -Value "  $((Invoke-WebRequest -Uri 'https://httpbin.org/user-agent' -UseBasicParsing -TimeoutSec 10).Content)" } catch { "  Failed" | Add-Content -Path $FILE }
+          Add-Content -Path $FILE -Value "PowerShell 默认 UserAgent:"
+          Add-Content -Path $FILE -Value "  $([Microsoft.PowerShell.Commands.PSUserAgent]::Chrome)"
+          Add-Content -Path $FILE -Value "  $([Microsoft.PowerShell.Commands.PSUserAgent]::Firefox)"
+          Add-Content -Path $FILE -Value "  $([Microsoft.PowerShell.Commands.PSUserAgent]::InternetExplorer)"
+          Add-Content -Path $FILE -Value "curl UA (via httpbin):"
+          try { Add-Content -Path $FILE -Value "  $(curl -s --max-time 10 https://httpbin.org/user-agent 2>$null)" } catch { "  curl not available" | Add-Content -Path $FILE }
+          Add-Content -Path $FILE -Value "httpbin.org/headers (完整请求头):"
+          try { (Invoke-WebRequest -Uri "https://httpbin.org/headers" -UseBasicParsing -TimeoutSec 10).Content | Add-Content -Path $FILE } catch { "  Failed" | Add-Content -Path $FILE }
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- httpbin.org/ip ---"
+          try { Add-Content -Path $FILE -Value "  $((Invoke-WebRequest -Uri 'https://httpbin.org/ip' -UseBasicParsing -TimeoutSec 10).Content)" } catch { "  Failed" | Add-Content -Path $FILE }
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- Win32_NetworkAdapter ---"
+          Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.PhysicalAdapter -eq $true } | ForEach-Object {
+              Add-Content -Path $FILE -Value "  名称: $($_.Name), MAC: $($_.MACAddress), 速度: $($_.Speed) bps, 状态: $($_.NetConnectionStatus)"
+          }
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- Win32_NetworkAdapterConfiguration ---"
+          Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled -eq $true } | ForEach-Object {
+              Add-Content -Path $FILE -Value "  描述: $($_.Description)"
+              Add-Content -Path $FILE -Value "  IP: $($_.IPAddress -join ', ')"
+              Add-Content -Path $FILE -Value "  子网掩码: $($_.IPSubnet -join ', ')"
+              Add-Content -Path $FILE -Value "  网关: $($_.DefaultIPGateway -join ', ')"
+              Add-Content -Path $FILE -Value "  DNS: $($_.DNSServerSearchOrder -join ', ')"
+              Add-Content -Path $FILE -Value "  DHCP: $($_.DHCPEnabled)"
+              Add-Content -Path $FILE -Value ""
+          }
+          Add-Content -Path $FILE -Value "--- ipconfig /all ---"
+          ipconfig /all | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value "--- ARP 表 ---"
+          arp -a | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value "--- 路由表 ---"
+          route print | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 8. 环境变量 ===================="
+          Get-ChildItem Env: | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" } | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 9. 已安装软件 ===================="
+          Add-Content -Path $FILE -Value "--- 已安装程序 (前 100) ---"
+          Get-CimInstance Win32_Product 2>$null | Select-Object -First 100 Name, Version, Vendor | Format-Table -AutoSize | Out-String | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- 工具版本 ---"
+          @(
+              @{n="PowerShell"; c="`$PSVersionTable.PSVersion"},
+              @{n="git"; c="git --version"},
+              @{n="node"; c="node --version"},
+              @{n="npm"; c="npm --version"},
+              @{n="python"; c="python --version"},
+              @{n="gcc"; c="gcc --version"},
+              @{n="rustc"; c="rustc --version"},
+              @{n="go"; c="go version"},
+              @{n="java"; c="java -version"},
+              @{n="dotnet"; c="dotnet --version"},
+              @{n="docker"; c="docker --version"},
+              @{n="cmake"; c="cmake --version"}
+          ) | ForEach-Object {
+              try {
+                  $r = Invoke-Expression $_.c 2>&1
+                  "$($_.n): $($r | Select-Object -First 1)" | Add-Content -Path $FILE
+              } catch {
+                  "$($_.n): N/A" | Add-Content -Path $FILE
+              }
+          }
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 10. BIOS / 主板信息 ===================="
+          Get-CimInstance Win32_BIOS | ForEach-Object {
+              Add-Content -Path $FILE -Value "  制造商: $($_.Manufacturer)"
+              Add-Content -Path $FILE -Value "  名称: $($_.Name)"
+              Add-Content -Path $FILE -Value "  版本: $($_.SMBIOSBIOSVersion)"
+              Add-Content -Path $FILE -Value "  发布日期: $($_.ReleaseDate)"
+          }
+          Get-CimInstance Win32_BaseBoard | ForEach-Object {
+              Add-Content -Path $FILE -Value "  主板: $($_.Product), 制造商: $($_.Manufacturer), 序列号: $($_.SerialNumber)"
+          }
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 11. 安全 & 虚拟化 ===================="
+          Add-Content -Path $FILE -Value "Hyper-V: $((Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All 2>$null).State)"
+          Add-Content -Path $FILE -Value "容器: $((Get-WindowsOptionalFeature -Online -FeatureName Containers 2>$null).State)"
+          Add-Content -Path $FILE -Value "虚拟化: $((Get-CimInstance Win32_Processor).VirtualizationFirmwareEnabled)"
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- Windows Defender 状态 ---"
+          Get-MpComputerStatus 2>$null | Select-Object AntivirusEnabled, RealTimeProtectionEnabled, AntivirusSignatureLastUpdated | Format-List | Out-String | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- 防火墙 ---"
+          Get-NetFirewallProfile | Select-Object Name, Enabled | Format-Table -AutoSize | Out-String | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 12. 进程 & 资源限制 ===================="
+          Add-Content -Path $FILE -Value "--- 内存使用 top 进程 (前 20) ---"
+          Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 20 Name, Id, @{n='Memory(MB)';e={[math]::Round($_.WorkingSet64/1MB,2)}}, CPU | Format-Table -AutoSize | Out-String | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- 服务 (running, 前 30) ---"
+          Get-Service | Where-Object { $_.Status -eq 'Running' } | Select-Object -First 30 Name, DisplayName | Format-Table -AutoSize | Out-String | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+          Add-Content -Path $FILE -Value "--- 计划任务 (前 30) ---"
+          Get-ScheduledTask | Where-Object { $_.State -ne 'Disabled' } | Select-Object -First 30 TaskName, State | Format-Table -AutoSize | Out-String | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+
+          Add-Content -Path $FILE -Value "==================== 13. 其他有用信息 ===================="
+          Add-Content -Path $FILE -Value "--- 当前用户 ---"
+          whoami | Add-Content -Path $FILE
+          net user $env:USERNAME | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value "--- 本地用户 ---"
+          net user | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value "--- 系统启动时间 ---"
+          (Get-CimInstance Win32_OperatingSystem).ConvertToDateTime((Get-CimInstance Win32_OperatingSystem).LastBootUpTime) | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value "--- 运行时间 ---"
+          $uptime = (Get-Date) - (Get-CimInstance Win32_OperatingSystem).ConvertToDateTime((Get-CimInstance Win32_OperatingSystem).LastBootUpTime)
+          "运行时间: $($uptime.Days) 天 $($uptime.Hours) 小时 $($uptime.Minutes) 分钟" | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value "--- 注册表 (环境) ---"
+          reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" 2>$null | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value "--- 端口监听 (前 30) ---"
+          netstat -ano | findstr "LISTENING" | Select-Object -First 30 | Add-Content -Path $FILE
+          Add-Content -Path $FILE -Value ""
+
+          Get-Content $FILE
+
+      - name: 📋 采集系统配置（macOS）
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          FILE="report-${{ matrix.os }}.txt"
+          SEP="============================================================"
+
+          echo "$SEP" >> "$FILE"
+          echo "  GitHub Actions Runner 侦察报告"
+          echo "  OS: ${{ matrix.os }}"
+          echo "  Runner: $RUNNER_NAME"
+          echo "  采集时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "$SEP"
+          echo ""
+
+          echo "==================== 1. 系统基本信息 ====================" >> "$FILE"
+          echo "主机名: $(hostname)" >> "$FILE"
+          echo "系统版本: $(sw_vers -productVersion)" >> "$FILE"
+          echo "系统构建: $(sw_vers -buildVersion)" >> "$FILE"
+          echo "系统名称: $(sw_vers -productName)" >> "$FILE"
+          echo "内核: $(uname -r)" >> "$FILE"
+          echo "架构: $(uname -m)" >> "$FILE"
+          echo ""
+
+          echo "==================== 2. GitHub Actions 元数据 ====================" >> "$FILE"
+          echo "Runner Name: $RUNNER_NAME" >> "$FILE"
+          echo "Runner OS: $RUNNER_OS" >> "$FILE"
+          echo "Runner Arch: $RUNNER_ARCH" >> "$FILE"
+          echo "Runner Temp: $RUNNER_TEMP" >> "$FILE"
+          echo "Runner Tool Cache: $RUNNER_TOOL_CACHE" >> "$FILE"
+          echo "Runner Workspace: $RUNNER_WORKSPACE" >> "$FILE"
+          echo "Image OS: $ImageOS" >> "$FILE"
+          echo "Image Version: $ImageVersion" >> "$FILE"
+          echo ""
+
+          echo "==================== 3. CPU 信息 ====================" >> "$FILE"
+          echo "--- sysctl hw ---" >> "$FILE"
+          echo "CPU 品牌: $(sysctl -n machdep.cpu.brand_string 2>/dev/null)" >> "$FILE"
+          echo "CPU 核心数: $(sysctl -n hw.ncpu 2>/dev/null)" >> "$FILE"
+          echo "物理 CPU: $(sysctl -n hw.physicalcpu 2>/dev/null)" >> "$FILE"
+          echo "逻辑 CPU: $(sysctl -n hw.logicalcpu 2>/dev/null)" >> "$FILE"
+          echo "CPU 频率: $(sysctl -n hw.cpufrequency 2>/dev/null)" >> "$FILE"
+          echo "L2 缓存: $(sysctl -n hw.l2cachesize 2>/dev/null)" >> "$FILE"
+          echo "L3 缓存: $(sysctl -n hw.l3cachesize 2>/dev/null)" >> "$FILE"
+          echo "页面大小: $(sysctl -n hw.pagesize 2>/dev/null)" >> "$FILE"
+          echo ""
+          echo "--- sysctl machdep.cpu ---" >> "$FILE"
+          sysctl machdep.cpu 2>/dev/null >> "$FILE"
+          echo ""
+          echo "--- system_profiler SPHardwareDataType ---" >> "$FILE"
+          system_profiler SPHardwareDataType 2>/dev/null >> "$FILE"
+          echo ""
+          echo "--- system_profiler SPSoftwareDataType ---" >> "$FILE"
+          system_profiler SPSoftwareDataType 2>/dev/null >> "$FILE"
+          echo ""
+
+          echo "==================== 4. 内存信息 ====================" >> "$FILE"
+          echo "--- sysctl hw.memsize ---" >> "$FILE"
+          memsize=$(sysctl -n hw.memsize 2>/dev/null)
+          echo "总内存: $((memsize / 1024 / 1024 / 1024)) GB" >> "$FILE"
+          echo ""
+          echo "--- vm_stat ---" >> "$FILE"
+          vm_stat >> "$FILE"
+          echo ""
+          echo "--- sysctl vm ---" >> "$FILE"
+          sysctl vm 2>/dev/null >> "$FILE"
+          echo ""
+          echo "--- memory_pressure ---" >> "$FILE"
+          memory_pressure 2>/dev/null >> "$FILE" || echo "memory_pressure not available" >> "$FILE"
+          echo ""
+
+          echo "==================== 5. GPU 信息 ====================" >> "$FILE"
+          echo "--- system_profiler SPDisplaysDataType ---" >> "$FILE"
+          system_profiler SPDisplaysDataType 2>/dev/null >> "$FILE"
+          echo ""
+
+          echo "==================== 6. 磁盘信息 ====================" >> "$FILE"
+          echo "--- df -h ---" >> "$FILE"
+          df -h >> "$FILE"
+          echo ""
+          echo "--- diskutil list ---" >> "$FILE"
+          diskutil list >> "$FILE"
+          echo ""
+          echo "--- diskutil info / ---" >> "$FILE"
+          diskutil info / >> "$FILE"
+          echo ""
+
+          echo "==================== 7. 网络信息 ====================" >> "$FILE"
+          echo "--- 公网 IP ---" >> "$FILE"
+          curl -s --max-time 10 ifconfig.me >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          curl -s --max-time 10 ip.sb >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo ""
+          echo "--- Cloudflare 1.1.1.1 cdn-cgi/trace ---" >> "$FILE"
+          curl -s --max-time 10 https://1.1.1.1/cdn-cgi/trace >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo "--- Cloudflare 1.0.0.1 cdn-cgi/trace ---" >> "$FILE"
+          curl -s --max-time 10 https://1.0.0.1/cdn-cgi/trace >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo "--- Cloudflare www cdn-cgi/trace (对比) ---" >> "$FILE"
+          curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo "--- User-Agent 探测 ---" >> "$FILE"
+          echo "curl 默认 UA:" >> "$FILE"
+          curl -s --max-time 10 -I https://www.google.com 2>/dev/null | grep -i "user-agent" >> "$FILE" || echo "  $(curl --version | head -1)" >> "$FILE"
+          echo "requests User-Agent (Python):" >> "$FILE"
+          python3 -c "import requests; print('  ' + requests.utils.default_headers()['User-Agent'])" 2>/dev/null || echo "  python requests not available" >> "$FILE"
+          echo "httpbin.org/headers (完整请求头):" >> "$FILE"
+          curl -s --max-time 10 https://httpbin.org/headers 2>/dev/null | python3 -m json.tool 2>/dev/null >> "$FILE" || curl -s --max-time 10 https://httpbin.org/headers >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo "--- httpbin.org/ip ---" >> "$FILE"
+          curl -s --max-time 10 https://httpbin.org/ip >> "$FILE" 2>&1
+          echo "" >> "$FILE"
+          echo ""
+          echo "--- ifconfig ---" >> "$FILE"
+          ifconfig 2>/dev/null >> "$FILE"
+          echo ""
+          echo "--- netstat -rn ---" >> "$FILE"
+          netstat -rn 2>/dev/null >> "$FILE"
+          echo ""
+          echo "--- scutil --dns ---" >> "$FILE"
+          scutil --dns 2>/dev/null | head -30 >> "$FILE"
+          echo ""
+          echo "--- networksetup -listallhardwareports ---" >> "$FILE"
+          networksetup -listallhardwareports 2>/dev/null >> "$FILE"
+          echo ""
+
+          echo "==================== 8. 环境变量 ====================" >> "$FILE"
+          env | sort >> "$FILE"
+          echo ""
+
+          echo "==================== 9. 已安装软件 ====================" >> "$FILE"
+          echo "--- Homebrew list (前 50) ---" >> "$FILE"
+          brew list 2>/dev/null | head -50 >> "$FILE" || echo "Homebrew not available" >> "$FILE"
+          echo ""
+          echo "--- 工具版本 ---" >> "$FILE"
+          echo "bash: $BASH_VERSION" >> "$FILE"
+          echo "zsh: $(zsh --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "gcc: $(gcc --version 2>/dev/null | head -1 || echo N/A)" >> "$FILE"
+          echo "clang: $(clang --version 2>/dev/null | head -1 || echo N/A)" >> "$FILE"
+          echo "rustc: $(rustc --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "go: $(go version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "java: $(java -version 2>&1 | head -1 || echo N/A)" >> "$FILE"
+          echo "node: $(node --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "python: $(python3 --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "ruby: $(ruby --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "docker: $(docker --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "git: $(git --version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "xcode: $(xcodebuild -version 2>/dev/null || echo N/A)" >> "$FILE"
+          echo "cmake: $(cmake --version 2>/dev/null | head -1 || echo N/A)" >> "$FILE"
+          echo ""
+
+          echo "==================== 10. 虚拟化信息 ====================" >> "$FILE"
+          echo "--- 是否在虚拟机中 ---" >> "$FILE"
+          sysctl -n kern.hv_vmm_present 2>/dev/null >> "$FILE" || echo "kern.hv_vmm_present not available" >> "$FILE"
+          echo "--- Hypervisor 框架 ---" >> "$FILE"
+          sysctl -n machdep.cpu.hv_support 2>/dev/null >> "$FILE" || echo "machdep.cpu.hv_support not available" >> "$FILE"
+          echo ""
+
+          echo "==================== 11. 安全信息 ====================" >> "$FILE"
+          echo "--- csrutil ---" >> "$FILE"
+          csrutil status 2>/dev/null >> "$FILE"
+          echo "--- spctl ---" >> "$FILE"
+          spctl --status 2>/dev/null >> "$FILE"
+          echo "--- Gatekeeper ---" >> "$FILE"
+          spctl --assess --type execute /bin/bash 2>/dev/null >> "$FILE" || echo "N/A" >> "$FILE"
+          echo ""
+
+          echo "==================== 12. 进程 & 资源 ====================" >> "$FILE"
+          echo "--- top -l 1 | head -20 ---" >> "$FILE"
+          top -l 1 2>/dev/null | head -20 >> "$FILE"
+          echo ""
+          echo "--- 内存 top 进程 (前 20) ---" >> "$FILE"
+          ps aux --sort=-%mem 2>/dev/null | head -21 >> "$FILE" || ps aux -m 2>/dev/null | head -21 >> "$FILE"
+          echo ""
+          echo "--- launchctl 列表 (前 30) ---" >> "$FILE"
+          launchctl list 2>/dev/null | head -30 >> "$FILE"
+          echo ""
+          echo "--- ulimit -a ---" >> "$FILE"
+          ulimit -a >> "$FILE"
+          echo ""
+
+          echo "==================== 13. 其他有用信息 ====================" >> "$FILE"
+          echo "--- locale ---" >> "$FILE"
+          locale >> "$FILE"
+          echo "--- 时区 ---" >> "$FILE"
+          systemsetup -gettimezone 2>/dev/null >> "$FILE" || echo "systemsetup not available" >> "$FILE"
+          echo "--- uptime ---" >> "$FILE"
+          uptime >> "$FILE"
+          echo "--- whoami / id ---" >> "$FILE"
+          whoami >> "$FILE"
+          id >> "$FILE"
+          echo "--- kextstat (前 30) ---" >> "$FILE"
+          kextstat 2>/dev/null | head -30 >> "$FILE" || echo "kextstat not available" >> "$FILE"
+          echo "--- ioreg (CPU, 前 30 行) ---" >> "$FILE"
+          ioreg -l | grep -i "cpu" | head -30 >> "$FILE"
+          echo "--- system_profiler SPStorageDataType ---" >> "$FILE"
+          system_profiler SPStorageDataType 2>/dev/null >> "$FILE"
+          echo ""
+
+          cat "$FILE"
+
+      - name: 📤 上传报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ matrix.os }}
+          path: report-${{ matrix.os }}.txt
+          retention-days: 30
+
+  # ============================================================
+  # 汇总所有报告并创建 Release
+  # ============================================================
+  publish-report:
+    name: 📦 发布侦察报告
+    needs: probe-runners
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 下载所有报告
+        uses: actions/download-artifact@v4
+        with:
+          path: reports
+          merge-multiple: false
+
+      - name: 📦 合并所有报告
+        run: |
+          echo "============================================================" > FINAL_REPORT.txt
+          echo "  GitHub Actions Runner 完整侦察报告" >> FINAL_REPORT.txt
+          echo "  生成时间: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> FINAL_REPORT.txt
+          echo "  触发者: ${{ github.actor }}" >> FINAL_REPORT.txt
+          echo "  运行 ID: ${{ github.run_id }}" >> FINAL_REPORT.txt
+          echo "  工作流: ${{ github.workflow }}" >> FINAL_REPORT.txt
+          echo "============================================================" >> FINAL_REPORT.txt
+          echo "" >> FINAL_REPORT.txt
+          echo "" >> FINAL_REPORT.txt
+
+          for dir in reports/*/; do
+            echo "####################################################" >> FINAL_REPORT.txt
+            echo "# $(basename "$dir")" >> FINAL_REPORT.txt
+            echo "####################################################" >> FINAL_REPORT.txt
+            echo "" >> FINAL_REPORT.txt
+            cat "$dir"*.txt >> FINAL_REPORT.txt
+            echo "" >> FINAL_REPORT.txt
+            echo "" >> FINAL_REPORT.txt
+          done
+
+          # 同时生成 JSON 格式摘要
+          echo '{' > SUMMARY.json
+          echo '  "generated_at": "'$(date -u '+%Y-%m-%dT%H:%M:%SZ')'",' >> SUMMARY.json
+          echo '  "runner_os": ["ubuntu-latest", "windows-latest", "macos-latest"],' >> SUMMARY.json
+          echo '  "workflow_run_id": "${{ github.run_id }}",' >> SUMMARY.json
+          echo '  "triggered_by": "${{ github.actor }}"' >> SUMMARY.json
+          echo '}' >> SUMMARY.json
+
+          echo "=== FINAL_REPORT.txt 预览（前 100 行）==="
+          head -100 FINAL_REPORT.txt
+          echo ""
+          echo "=== 文件大小 ==="
+          wc -c FINAL_REPORT.txt
+          echo "=== 文件行数 ==="
+          wc -l FINAL_REPORT.txt
+
+      - name: 🚀 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: runner-report-${{ github.run_number }}
+          name: "🔍 Runner 侦察报告 #${{ github.run_number }}"
+          body: |
+            ## GitHub Actions Runner 侦察报告
+
+            **采集时间**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+            **触发者**: @${{ github.actor }}
+            **运行编号**: #${{ github.run_number }}
+
+            ### 覆盖平台
+            - `ubuntu-latest`
+            - `windows-latest`
+            - `macos-latest`
+
+            ### 采集内容
+            - 系统基本信息（OS、内核、架构）
+            - GitHub Actions 元数据（runner 变量、镜像版本）
+            - CPU 信息（型号、核心数、缓存、拓扑）
+            - 内存信息（总量、可用、插槽详情）
+            - GPU 信息（型号、显存、驱动）
+            - 磁盘信息（分区、文件系统、I/O 调度）
+            - 网络信息（公网 IP、内网 IP、DNS、路由）
+            - 环境变量（完整列表）
+            - 已安装软件及版本
+            - 虚拟化 / 容器信息
+            - 安全配置（SELinux、AppArmor、防火墙）
+            - 进程及资源限制
+            - BIOS / 主板信息（Windows）
+            - 编译器及构建工具
+            - 其他系统配置
+
+            > **注意**: GitHub Actions runner 配置会随时间更新，此报告仅反映采集时刻的状态。
+
+            ### 每次手动触发即可获取最新报告
+          draft: false
+          prerelease: false
+          files: |
+            FINAL_REPORT.txt
+            SUMMARY.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
